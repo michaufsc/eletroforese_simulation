@@ -5,88 +5,74 @@ import numpy as np
 from io import BytesIO
 from fpdf import FPDF
 from datetime import datetime
-from scipy.constants import epsilon_0, elementary_charge, Boltzmann
-import matplotlib.pyplot as plt
 import os
-
-# Verificação e instalação automática do Plotly (opcional)
-try:
-    import plotly.graph_objects as go
-    PLOTLY_ENABLED = True
-except ImportError:
-    PLOTLY_ENABLED = False
-    st.warning("Para visualizações 3D interativas, instale Plotly: `pip install plotly`")
 
 # Configuração da página
 st.set_page_config(
-    page_title="Simulador Avançado de Eletroforese",
+    page_title="Simulador de Eletroforese Capilar",
     layout="wide",
     page_icon="🔬"
 )
 
+# Verificação de dependências gráficas
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_ENABLED = True
+except ImportError:
+    MATPLOTLIB_ENABLED = False
+    st.warning("Visualizações avançadas desativadas (Matplotlib não instalado)")
+
 # Classe de simulação científica
-class AdvancedElectrophoresisSimulator:
+class EletroforeseSimulator:
     def __init__(self):
-        self.constants = {
-            'epsilon_0': epsilon_0,
-            'e': elementary_charge,
-            'k_B': Boltzmann
+        self.constantes = {
+            'fator_conversao': 1e5  # Fator para unidades práticas
         }
     
-    def calculate_mobility(self, charge, radius, viscosity, permittivity, temp, ionic_strength):
-        """Cálculo preciso da mobilidade eletroforética"""
-        eta = viscosity * 1e-3  # cP to Pa·s
-        epsilon = permittivity * self.constants['epsilon_0']
+    def calcular_mobilidade(self, carga, massa, pH, temperatura=25):
+        """Calcula a mobilidade eletroforética simplificada"""
+        # Correção para temperatura (fictício para exemplo)
+        fator_temp = 1 + 0.02 * (temperatura - 25)
         
-        # Termo principal
-        mobility = (charge * self.constants['e']) / (6 * np.pi * eta * radius)
-        
-        # Correção de Debye-Hückel
-        debye_length = np.sqrt(epsilon * self.constants['k_B'] * temp / 
-                             (self.constants['e']**2 * ionic_strength * 1e3 * 6.022e23))
-        correction = 1 / (1 + radius/debye_length)
-        
-        return mobility * correction * 1e8  # Convert to practical units
+        # Cálculo básico da mobilidade
+        return (carga / massa) * (1 + (pH - 7) * 0.1) * self.constantes['fator_conversao'] * fator_temp
 
 # Interface principal
 def main():
-    st.title("🔬 Simulador Profissional de Eletroforese Capilar")
+    st.title("🔬 Simulador de Eletroforese Capilar")
     
     # Inicializar simulador
-    simulator = AdvancedElectrophoresisSimulator()
+    simulator = EletroforeseSimulator()
     
     # Controles na sidebar
     with st.sidebar:
         st.header("Configurações")
-        advanced_mode = st.checkbox("Modo Avançado", True)
-        
-        if not PLOTLY_ENABLED:
-            st.error("Recursos 3D desativados (Plotly não instalado)")
-
+        modo_avancado = st.checkbox("Usar parâmetros avançados", False)
+    
     # Abas principais
     tab1, tab2 = st.tabs(["Busca Molecular", "Simulação"])
 
     with tab1:
         st.header("🔍 Consulta ao PubChem")
-        compound = st.text_input("Nome da molécula:", "caffeine")
+        nome_molecula = st.text_input("Nome da molécula (em inglês):", "aspirin")
         
-        if compound:
+        if nome_molecula:
             with st.spinner("Buscando no PubChem..."):
                 try:
-                    result = pcp.get_compounds(compound, 'name')[0]
-                    data = {
-                        "Nome": result.iupac_name,
-                        "Fórmula": result.molecular_formula,
-                        "Peso Molecular": result.molecular_weight,
-                        "CID": result.cid
+                    resultado = pcp.get_compounds(nome_molecula, 'name')[0]
+                    dados = {
+                        "Nome": resultado.iupac_name,
+                        "Fórmula": resultado.molecular_formula,
+                        "Peso Molecular": resultado.molecular_weight,
+                        "CID": resultado.cid
                     }
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.json(data)
+                        st.json(dados)
                     with col2:
-                        st.image(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{result.cid}/PNG",
-                                caption=f"Estrutura de {result.iupac_name}")
+                        st.image(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{resultado.cid}/PNG",
+                                caption=f"Estrutura de {resultado.iupac_name}")
                 
                 except Exception as e:
                     st.error(f"Erro na busca: {str(e)}")
@@ -94,72 +80,80 @@ def main():
     with tab2:
         st.header("⚡ Simulação de Eletroforese")
         
-        with st.expander("Parâmetros de Controle", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                voltage = st.slider("Voltagem (kV)", 5, 30, 15)
-                length = st.slider("Comprimento do capilar (cm)", 10, 100, 50)
-                temp = st.slider("Temperatura (°C)", 15, 40, 25)
-            
-            with col2:
-                ph = st.slider("pH do tampão", 2.0, 10.0, 7.0, 0.1)
-                viscosity = st.slider("Viscosidade (cP)", 0.8, 2.5, 1.0, 0.1)
-                ionic_str = st.slider("Força iônica (mM)", 10, 200, 50)
+        # Parâmetros básicos
+        col1, col2 = st.columns(2)
+        with col1:
+            voltagem = st.slider("Voltagem (kV)", 5, 30, 15)
+            comprimento = st.slider("Comprimento do capilar (cm)", 10, 100, 50)
+        with col2:
+            pH = st.slider("pH do tampão", 2.0, 10.0, 7.0, 0.1)
+            temperatura = st.slider("Temperatura (°C)", 15, 40, 25)
         
-        # Cálculos científicos
+        # Parâmetros avançados
+        if modo_avancado:
+            with st.expander("Parâmetros Avançados"):
+                viscosidade = st.slider("Viscosidade (cP)", 0.8, 2.5, 1.0, 0.1)
+                forca_ionica = st.slider("Força iônica (mM)", 10, 200, 50)
+        
+        # Controle de simulação
         if st.button("Executar Simulação", type="primary"):
             with st.spinner("Calculando..."):
                 try:
-                    # Parâmetros de exemplo (substitua pelos seus valores reais)
-                    charge = -1 if ph > 7 else 1
-                    radius = 1e-9  # 1 nm
+                    # Exemplo com valores padrão
+                    massa = 180.16  # Massa molecular da aspirina (exemplo)
+                    carga = -1 if pH > 7 else 1  # Carga simplificada
                     
-                    mobility = simulator.calculate_mobility(
-                        charge=charge,
-                        radius=radius,
-                        viscosity=viscosity,
-                        permittivity=78.5,
-                        temp=temp + 273.15,
-                        ionic_strength=ionic_str
+                    mobilidade = simulator.calcular_mobilidade(
+                        carga=carga,
+                        massa=massa,
+                        pH=pH,
+                        temperatura=temperatura
                     )
                     
-                    migration_time = (length * 1e-2) / (mobility * 1e-8 * voltage * 1e3)
+                    tempo_migracao = (comprimento * 1e-2) / (mobilidade * voltagem * 1e3)
                     
                     # Gerar dados do cromatograma
-                    t = np.linspace(0, migration_time * 2, 1000)
-                    signal = np.exp(-(t - migration_time)**2 / (0.1 * migration_time**2)) * 100
+                    t = np.linspace(0, tempo_migracao * 2, 100)
+                    sinal = np.exp(-(t - tempo_migracao)**2 / (0.2 * tempo_migracao**2)) * 100
                     
                     # Visualização
-                    st.success(f"Tempo de migração: {migration_time:.2f} s | Mobilidade: {mobility:.2e} m²/Vs")
+                    st.success(f"Tempo de migração estimado: {tempo_migracao:.2f} segundos")
                     
-                    if PLOTLY_ENABLED:
-                        # Gráfico 3D interativo
-                        fig = go.Figure(data=[
-                            go.Scatter3d(
-                                x=t,
-                                y=[mobility] * len(t),
-                                z=signal,
-                                mode='lines',
-                                line=dict(width=8, color='#FF6B6B')
-                        ])
-                        fig.update_layout(
-                            scene=dict(
-                                xaxis_title='Tempo (s)',
-                                yaxis_title='Mobilidade',
-                                zaxis_title='Intensidade'
-                            ),
-                            title='Perfil 3D da Separação',
-                            margin=dict(l=0, r=0, b=0, t=30)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        # Fallback para matplotlib
+                    if MATPLOTLIB_ENABLED:
                         fig, ax = plt.subplots()
-                        ax.plot(t, signal, color='purple')
+                        ax.plot(t, sinal, color='purple', linewidth=2)
                         ax.set_xlabel('Tempo (s)')
                         ax.set_ylabel('Intensidade')
+                        ax.grid(True, linestyle='--', alpha=0.6)
                         st.pyplot(fig)
+                    else:
+                        st.line_chart(
+                            pd.DataFrame({
+                                'Tempo': t,
+                                'Intensidade': sinal
+                            }).set_index('Tempo')
+                        )
+                    
+                    # Relatório em PDF
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", size=12)
+                    pdf.cell(0, 10, "Relatório de Simulação", ln=True, align='C')
+                    pdf.cell(0, 10, f"Molécula: {nome_molecula}", ln=True)
+                    pdf.cell(0, 10, f"Tempo de migração: {tempo_migracao:.2f} s", ln=True)
+                    
+                    img_path = "temp_plot.png"
+                    if MATPLOTLIB_ENABLED:
+                        fig.savefig(img_path, bbox_inches='tight')
+                        pdf.image(img_path, x=10, y=40, w=180)
+                        os.remove(img_path)
+                    
+                    st.download_button(
+                        label="📥 Baixar Relatório (PDF)",
+                        data=pdf.output(dest='S').encode('latin1'),
+                        file_name="relatorio_eletroforese.pdf",
+                        mime="application/pdf"
+                    )
                 
                 except Exception as e:
                     st.error(f"Erro na simulação: {str(e)}")
