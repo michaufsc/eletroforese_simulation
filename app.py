@@ -1,139 +1,245 @@
 import streamlit as st
 import pubchempy as pcp
 import pandas as pd
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
 from fpdf import FPDF
+from datetime import datetime
+import plotly.graph_objects as go
+from scipy.constants import epsilon_0, elementary_charge, Boltzmann
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+import os
 
-st.set_page_config(page_title="Consulta e Simulação - PubChem + Eletroforese", layout="centered")
-st.title("🔬 Consulta de Moléculas + Simulação de Eletroforese")
+# ----------------------------
+# 1. CONFIGURAÇÕES INICIAIS
+# ----------------------------
+st.set_page_config(
+    page_title="Simulador Profissional de Eletroforese", 
+    layout="wide",
+    page_icon="🔬"
+)
 
-# Criar banco local se não existir
-ARQUIVO_CSV = "banco_moleculas.csv"
-if not os.path.exists(ARQUIVO_CSV):
-    df_vazio = pd.DataFrame(columns=["Nome", "Fórmula", "Peso Molecular", "SMILES", "CID"])
-    df_vazio.to_csv(ARQUIVO_CSV, index=False)
+# ----------------------------
+# 2. CLASSE DE SIMULAÇÃO CIENTÍFICA
+# ----------------------------
+class NernstPlanckSimulator:
+    def __init__(self):
+        self.constantes = {
+            'epsilon_0': 8.854e-12,  # F/m
+            'k_B': Boltzmann,         # J/K
+            'e': elementary_charge    # C
+        }
+    
+    def calcular_mobilidade(self, carga, raio, viscosidade, permissividade_rel, temperatura, forca_ionica):
+        """Modelo completo com correções de Debye-Hückel e força iônica"""
+        eta = viscosidade * 1e-3  # cP para Pa·s
+        epsilon = permissividade_rel * self.constantes['epsilon_0']
+        
+        # Termo de Stokes-Einstein
+        termo_stokes = (carga * self.constantes['e']) / (6 * np.pi * eta * raio)
+        
+        # Correção de Debye-Hückel
+        raio_debye = np.sqrt(epsilon * self.constantes['k_B'] * temperatura / 
+                          (self.constantes['e']**2 * forca_ionica * 1e3 * 6.022e23))
+        fator_debye = 1 / (1 + raio/raio_debye)
+        
+        # Efeito da temperatura
+        fator_temp = np.exp(298.15/temperatura - 1)
+        
+        return termo_stokes * fator_debye * fator_temp * 1e8  # Unidades práticas
 
-# Função para buscar no PubChem
+# ----------------------------
+# 3. CONFIGURAÇÃO DO FIREBASE (OPCIONAL)
+# ----------------------------
+def init_firebase():
+    if not firebase_admin._apps:
+        # Substitua pelo seu config ou arquivo JSON
+        FIREBASE_CONFIG = {
+            "type": "service_account",
+            # ... (seus dados de configuração)
+        }
+        cred = credentials.Certificate(FIREBASE_CONFIG)
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
+
+try:
+    db = init_firebase()
+    firebase_ready = True
+except:
+    firebase_ready = False
+    st.warning("Modo offline ativado (Firebase não configurado)")
+
+# ----------------------------
+# 4. FUNÇÕES PRINCIPAIS
+# ----------------------------
 def buscar_molecula(nome):
     try:
         mol = pcp.get_compounds(nome, 'name')[0]
-        dados = {
+        return {
             "Nome": mol.iupac_name,
             "Fórmula": mol.molecular_formula,
             "Peso Molecular": mol.molecular_weight,
             "SMILES": mol.canonical_smiles,
-            "CID": mol.cid
+            "CID": mol.cid,
+            "Data": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
-        return dados
-    except IndexError:
+    except Exception as e:
+        st.error(f"Erro na busca: {str(e)}")
         return None
 
-# Entrada do usuário
-nome_molecula = st.text_input("Digite o nome da molécula:")
+def gerar_relatorio_pdf(params, resultados):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    
+    # Cabeçalho
+    pdf.cell(0, 10, "Relatório Científico de Eletroforese", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Parâmetros
+    pdf.cell(0, 10, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True)
+    for key, value in params.items():
+        pdf.cell(0, 10, f"{key}: {value}", ln=True)
+    
+    # Gráfico
+    pdf.ln(10)
+    pdf.cell(0, 10, "Cromatograma Simulado:", ln=True)
+    pdf.image("temp_plot.png", x=10, w=180)
+    
+    return pdf
 
-if nome_molecula:
-    dados = buscar_molecula(nome_molecula)
-    if dados:
-        st.success("Molécula encontrada!")
-        st.dataframe(pd.DataFrame([dados]))
+# ----------------------------
+# 5. INTERFACE STREAMLIT
+# ----------------------------
+def main():
+    st.title("🔬 Simulador Profissional de Eletroforese Capilar")
+    
+    # Barra lateral
+    with st.sidebar:
+        st.header("Configurações Globais")
+        modo_avancado = st.checkbox("Modo Avançado", True)
+        if firebase_ready:
+            st.success("Firebase Conectado")
+        else:
+            st.warning("Modo Local Ativo")
+    
+    # Abas principais
+    tab1, tab2, tab3 = st.tabs(["Busca Molecular", "Simulação", "Banco de Dados"])
+    
+    with tab1:
+        st.header("🔍 Busca no PubChem")
+        nome_molecula = st.text_input("Digite o nome da molécula (em inglês):", "aspirin")
+        
+        if nome_molecula:
+            with st.spinner("Buscando no PubChem..."):
+                dados = buscar_molecula(nome_molecula)
+            
+            if dados:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.json(dados)
+                    if st.button("Salvar no Banco"):
+                        if firebase_ready:
+                            db.collection("moleculas").document(str(dados["CID"])).set(dados)
+                            st.success("Salvo no Firebase!")
+                with col2:
+                    st.image(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{dados['CID']}/PNG", 
+                           caption=f"Estrutura 2D de {dados['Nome']}")
+    
+    with tab2:
+        st.header("⚡ Simulação de Eletroforese")
+        simulator = NernstPlanckSimulator()
+        
+        with st.expander("Parâmetros da Simulação", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                voltagem = st.slider("Voltagem (kV)", 5, 30, 15)
+                comprimento = st.slider("Comprimento do Capilar (cm)", 10, 100, 50)
+                temperatura = st.slider("Temperatura (°C)", 15, 40, 25)
+                
+            with col2:
+                pH = st.slider("pH do Tampão", 2.0, 10.0, 7.0, 0.1)
+                viscosidade = st.slider("Viscosidade (cP)", 0.8, 2.5, 1.0, 0.1)
+                forca_ionica = st.slider("Força Iônica (mM)", 10, 200, 50)
+        
+        if st.button("Executar Simulação Completa"):
+            # Cálculos científicos
+            raio_estimado = 1e-9  # 1 nm como aproximação
+            mobilidade = simulator.calcular_mobilidade(
+                carga=2, 
+                raio=raio_estimado,
+                viscosidade=viscosidade,
+                permissividade_rel=78.5,
+                temperatura=temperatura + 273.15,
+                forca_ionica=forca_ionica
+            )
+            
+            # Simulação do cromatograma
+            tempo_migracao = (comprimento * 1e-2) / (mobilidade * 1e-8 * voltagem * 1e3)
+            t = np.linspace(0, tempo_migracao * 1.5, 1000)
+            y = np.exp(-(t - tempo_migracao)**2 / (2 * (tempo_migracao/10)**2)) * 100
+            
+            # Visualização 3D
+            fig_3d = go.Figure(data=[
+                go.Scatter3d(
+                    x=t,
+                    y=[mobilidade] * len(t),
+                    z=y,
+                    mode='lines',
+                    line=dict(width=8, color='purple')
+                )
+            ])
+            fig_3d.update_layout(
+                scene=dict(
+                    xaxis_title='Tempo (s)',
+                    yaxis_title='Mobilidade (10^-8 m²/Vs)',
+                    zaxis_title='Intensidade'
+                ),
+                title='Perfil 3D da Separação'
+            )
+            
+            # Mostrar resultados
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(fig_3d, use_container_width=True)
+            with col2:
+                st.metric("Tempo de Migração", f"{tempo_migracao:.2f} s")
+                st.metric("Mobilidade Calculada", f"{mobilidade:.2e} x10⁻⁸ m²/Vs")
+                
+                # Gerar PDF
+                pdf = gerar_relatorio_pdf(
+                    params={
+                        "Voltagem": f"{voltagem} kV",
+                        "Comprimento": f"{comprimento} cm",
+                        "Temperatura": f"{temperatura} °C",
+                        "pH": pH,
+                        "Força Iônica": f"{forca_ionica} mM"
+                    },
+                    resultados={
+                        "Tempo Migração": tempo_migracao,
+                        "Mobilidade": mobilidade
+                    }
+                )
+                
+                st.download_button(
+                    label="📥 Baixar Relatório Completo",
+                    data=pdf.output(dest='S').encode('latin1'),
+                    file_name="relatorio_eletroforese.pdf",
+                    mime="application/pdf"
+                )
+    
+    with tab3:
+        st.header("📊 Banco de Dados")
+        if firebase_ready:
+            docs = db.collection("moleculas").stream()
+            dados = [doc.to_dict() for doc in docs]
+            st.dataframe(pd.DataFrame(dados))
+        else:
+            st.warning("Conecte-se ao Firebase para ativar esta funcionalidade")
 
-        # Mostrar imagem da estrutura
-        st.image(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{dados['CID']}/PNG", caption="Estrutura da Molécula")
-
-        # Botão para salvar no banco local
-        if st.button("Salvar no banco local"):
-            banco_df = pd.read_csv(ARQUIVO_CSV)
-            if dados['CID'] not in banco_df['CID'].values:
-                banco_df = pd.concat([banco_df, pd.DataFrame([dados])], ignore_index=True)
-                banco_df.to_csv(ARQUIVO_CSV, index=False)
-                st.success("Molécula salva no banco!")
-            else:
-                st.warning("Essa molécula já está no banco.")
-    else:
-        st.error("Molécula não encontrada no PubChem.")
-
-# Mostrar banco de moléculas local
-st.subheader("📁 Banco de Moléculas Local")
-banco_df = pd.read_csv(ARQUIVO_CSV)
-st.dataframe(banco_df, use_container_width=True)
-
-# ---------------------- Simulação de Eletroforese ----------------------
-st.subheader("⚡ Simulação de Eletroforese Capilar")
-st.markdown("Simule tempos de migração com base em massa molar e carga relativa.")
-
-if not banco_df.empty:
-    selecionadas = st.multiselect("Escolha moléculas para simular:", banco_df["Nome"].tolist())
-    voltagem = st.slider("Voltagem aplicada (kV):", 5, 30, 15)
-    comprimento_capilar = st.slider("Comprimento do capilar (cm):", 10, 100, 50)
-    pH = st.slider("pH da solução tampão:", 2.0, 10.0, 7.0, step=0.1)
-    ruido = st.checkbox("Adicionar ruído ao cromatograma", value=True)
-
-    if selecionadas:
-        tempo_base = comprimento_capilar / (voltagem * 1e3)
-        tempos = []
-        intensidades = []
-        massas = []
-
-        for nome in selecionadas:
-            linha = banco_df[banco_df["Nome"] == nome].iloc[0]
-            massa = linha["Peso Molecular"]
-            carga_simulada = -1 if massa > 120 else 1
-            mobilidade = (carga_simulada / massa) * (1 + (pH - 7) * 0.1) * 1e5
-            tempo_migracao = comprimento_capilar / (mobilidade * voltagem)
-            intensidade = np.exp(-massa / 300) * 100
-            tempos.append((nome, tempo_migracao))
-            intensidades.append(intensidade)
-            massas.append(massa)
-
-        tempos_ordenados = sorted(zip(tempos, intensidades, massas), key=lambda x: x[0][1])
-        t = np.linspace(0, max([x[0][1] for x in tempos_ordenados]) + 5, 1000)
-        y = np.zeros_like(t)
-
-        for (nome, tempo), intensidade, massa in tempos_ordenados:
-            largura = 0.5 + massa / 500
-            pico = intensidade * np.exp(-((t - tempo)**2) / (2 * largura**2))
-            y += pico
-
-        if ruido:
-            y += np.random.normal(0, 0.5, size=len(y))
-
-        fig, ax = plt.subplots()
-        ax.plot(t, y, color='purple')
-        ax.set_xlabel("Tempo (s)")
-        ax.set_ylabel("Intensidade (u.a.)")
-        ax.set_title("Cromatograma Simulado de Eletroforese")
-        st.pyplot(fig)
-
-        # Exportar PDF
-        buffer = BytesIO()
-        fig.savefig(buffer, format="png")
-        buffer.seek(0)
-
-        class PDF(FPDF):
-            def header(self):
-                self.set_font("Arial", "B", 12)
-                self.cell(0, 10, "Relatório de Simulação de Eletroforese", ln=True, align="C")
-
-        if st.button("📄 Exportar PDF da Simulação"):
-            pdf = PDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=10)
-
-            pdf.cell(0, 10, f"Moléculas Simuladas: {', '.join([x[0][0] for x in tempos_ordenados])}", ln=True)
-            pdf.cell(0, 10, f"Voltagem: {voltagem} kV | Comprimento do capilar: {comprimento_capilar} cm | pH: {pH}", ln=True)
-
-            img_path = "cromatograma_temp.png"
-            with open(img_path, "wb") as f:
-                f.write(buffer.read())
-            pdf.image(img_path, x=10, y=40, w=180)
-            pdf.output("simulacao_eletroforese.pdf")
-
-            with open("simulacao_eletroforese.pdf", "rb") as f:
-                st.download_button("📥 Baixar PDF", f, file_name="simulacao_eletroforese.pdf")
-    else:
-        st.info("Selecione moléculas para simular.")
-else:
-    st.warning("Adicione moléculas ao banco para usar a simulação.")
+if __name__ == "__main__":
+    main()
