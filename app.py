@@ -1,213 +1,139 @@
 import streamlit as st
 import pubchempy as pcp
 import pandas as pd
+import os
 import numpy as np
-from fpdf import FPDF
-from datetime import datetime
 import matplotlib.pyplot as plt
+from io import BytesIO
+from fpdf import FPDF
 
-# Configuração da página
-st.set_page_config(
-    page_title="CE Simulator PRO",
-    layout="wide",
-    page_icon="🧪"
-)
+st.set_page_config(page_title="Consulta e Simulação - PubChem + Eletroforese", layout="centered")
+st.title("🔬 Consulta de Moléculas + Simulação de Eletroforese")
 
-# Banco de dados de moléculas
-BANCO_MOLECULAS = {
-    "Ácido Gálico": {
-        "massa": 170.12,
-        "carga": -1,
-        "raio_hidro": 3.5,
-        "lambda_max": 270
-    },
-    "Quercetina": {
-        "massa": 302.23,
-        "carga": -1,
-        "raio_hidro": 4.2,
-        "lambda_max": 370
-    },
-    "Cafeína": {
-        "massa": 194.19,
-        "carga": 0,
-        "raio_hidro": 3.8,
-        "lambda_max": 273
-    },
-    "Ácido Ascórbico": {
-        "massa": 176.12,
-        "carga": -1,
-        "raio_hidro": 3.6,
-        "lambda_max": 265
-    }
-}
+# Criar banco local se não existir
+ARQUIVO_CSV = "banco_moleculas.csv"
+if not os.path.exists(ARQUIVO_CSV):
+    df_vazio = pd.DataFrame(columns=["Nome", "Fórmula", "Peso Molecular", "SMILES", "CID"])
+    df_vazio.to_csv(ARQUIVO_CSV, index=False)
 
-# Classe de simulação científica aprimorada
-class EletroforeseSimulator:
-    def __init__(self):
-        self.constantes = {
-            'epsilon': 78.5,          # Constante dielétrica da água
-            'viscosidade_agua': 0.89, # cP a 25°C
-            'faraday': 96485,         # C/mol
-            'R': 8.314                # J/(mol·K)
+# Função para buscar no PubChem
+def buscar_molecula(nome):
+    try:
+        mol = pcp.get_compounds(nome, 'name')[0]
+        dados = {
+            "Nome": mol.iupac_name,
+            "Fórmula": mol.molecular_formula,
+            "Peso Molecular": mol.molecular_weight,
+            "SMILES": mol.canonical_smiles,
+            "CID": mol.cid
         }
+        return dados
+    except IndexError:
+        return None
 
-    def calcular_mobilidade(self, composto, pH, temperatura):
-        """Calcula a mobilidade considerando propriedades do composto"""
-        T = temperatura + 273.15
-        carga = self.calcular_carga_efetiva(composto['carga'], pH)
-        
-        # Cálculo da mobilidade eletroforética
-        mu_ef = (carga * self.constantes['faraday']) / (
-            6 * np.pi * self.constantes['viscosidade_agua'] * 
-            composto['raio_hidro'] * 1e-10
-        )
-        
-        # Cálculo da mobilidade eletroosmótica (EOF)
-        zeta = -0.04 * (pH - 3)  # Modelo simplificado
-        mu_eo = (self.constantes['epsilon'] * zeta * 1e-3) / (
-            4 * np.pi * self.constantes['viscosidade_agua'] * 1e-3
-        )
-        
-        return (mu_ef + mu_eo) * 1e8  # Em unidades práticas
+# Entrada do usuário
+nome_molecula = st.text_input("Digite o nome da molécula:")
 
-    def calcular_carga_efetiva(self, carga_base, pH):
-        """Modelo simplificado de ionização"""
-        return carga_base * (1 / (1 + 10**(pH - 7)))
+if nome_molecula:
+    dados = buscar_molecula(nome_molecula)
+    if dados:
+        st.success("Molécula encontrada!")
+        st.dataframe(pd.DataFrame([dados]))
 
-# Interface principal
-def main():
-    st.title("🧪 CE Simulator PRO")
-    simulator = EletroforeseSimulator()
+        # Mostrar imagem da estrutura
+        st.image(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{dados['CID']}/PNG", caption="Estrutura da Molécula")
 
-    # Sidebar com configurações
-    with st.sidebar:
-        st.header("⚙ Configurações")
-        voltagem = st.slider("Voltagem (kV)", 5, 30, 15)
-        comprimento = st.slider("Comprimento do capilar (cm)", 10, 100, 50)
-        pH = st.slider("pH do tampão", 2.0, 10.0, 7.0, 0.1)
-        temperatura = st.slider("Temperatura (°C)", 15, 40, 25)
-        lambda_detecao = st.slider("Comprimento de onda (nm)", 200, 400, 280)
+        # Botão para salvar no banco local
+        if st.button("Salvar no banco local"):
+            banco_df = pd.read_csv(ARQUIVO_CSV)
+            if dados['CID'] not in banco_df['CID'].values:
+                banco_df = pd.concat([banco_df, pd.DataFrame([dados])], ignore_index=True)
+                banco_df.to_csv(ARQUIVO_CSV, index=False)
+                st.success("Molécula salva no banco!")
+            else:
+                st.warning("Essa molécula já está no banco.")
+    else:
+        st.error("Molécula não encontrada no PubChem.")
 
-    # Abas principais
-    tab1, tab2, tab3 = st.tabs(["Banco de Moléculas", "Simulação", "Relatório"])
+# Mostrar banco de moléculas local
+st.subheader("📁 Banco de Moléculas Local")
+banco_df = pd.read_csv(ARQUIVO_CSV)
+st.dataframe(banco_df, use_container_width=True)
 
-    with tab1:
-        st.header("📚 Banco de Moléculas")
-        
-        # Seleção de moléculas do banco
-        selecionadas = st.multiselect(
-            "Selecione moléculas para simulação:",
-            list(BANCO_MOLECULAS.keys()),
-            default=["Ácido Gálico", "Quercetina"]
-        )
+# ---------------------- Simulação de Eletroforese ----------------------
+st.subheader("⚡ Simulação de Eletroforese Capilar")
+st.markdown("Simule tempos de migração com base em massa molar e carga relativa.")
 
-        # Busca no PubChem
-        st.subheader("🔍 Adicionar Nova Molécula")
-        nova_molecula = st.text_input("Nome da molécula (em inglês):", "aspirin")
-        
-        if st.button("Buscar no PubChem"):
-            try:
-                compound = pcp.get_compounds(nova_molecula, 'name')[0]
-                info = {
-                    "Nome": compound.iupac_name,
-                    "Fórmula": compound.molecular_formula,
-                    "Massa": compound.molecular_weight
-                }
-                st.success("Molécula encontrada!")
-                st.json(info)
-                
-                if st.button("Adicionar ao Banco Temporário"):
-                    BANCO_MOLECULAS[compound.iupac_name] = {
-                        "massa": compound.molecular_weight,
-                        "carga": -1,  # Valor padrão
-                        "raio_hidro": 4.0,
-                        "lambda_max": 270
-                    }
-            except Exception as e:
-                st.error(f"Erro na busca: {str(e)}")
+if not banco_df.empty:
+    selecionadas = st.multiselect("Escolha moléculas para simular:", banco_df["Nome"].tolist())
+    voltagem = st.slider("Voltagem aplicada (kV):", 5, 30, 15)
+    comprimento_capilar = st.slider("Comprimento do capilar (cm):", 10, 100, 50)
+    pH = st.slider("pH da solução tampão:", 2.0, 10.0, 7.0, step=0.1)
+    ruido = st.checkbox("Adicionar ruído ao cromatograma", value=True)
 
-    with tab2:
-        st.header("⚡ Simulação")
-        
-        if st.button("Executar Simulação", type="primary"):
-            if not selecionadas:
-                st.warning("Selecione pelo menos uma molécula!")
-                return
+    if selecionadas:
+        tempo_base = comprimento_capilar / (voltagem * 1e3)
+        tempos = []
+        intensidades = []
+        massas = []
 
-            resultados = []
-            tempos = []
-            sinais = []
+        for nome in selecionadas:
+            linha = banco_df[banco_df["Nome"] == nome].iloc[0]
+            massa = linha["Peso Molecular"]
+            carga_simulada = -1 if massa > 120 else 1
+            mobilidade = (carga_simulada / massa) * (1 + (pH - 7) * 0.1) * 1e5
+            tempo_migracao = comprimento_capilar / (mobilidade * voltagem)
+            intensidade = np.exp(-massa / 300) * 100
+            tempos.append((nome, tempo_migracao))
+            intensidades.append(intensidade)
+            massas.append(massa)
 
-            for molecula in selecionadas:
-                props = BANCO_MOLECULAS[molecula]
-                
-                # Calcular mobilidade
-                mu = simulator.calcular_mobilidade(props, pH, temperatura)
-                
-                # Calcular tempo de migração
-                tempo = (comprimento * 1e-2) / (mu * voltagem * 1e3)
-                tempos.append(tempo)
-                
-                # Gerar pico
-                t = np.linspace(0, max(tempos)*1.5, 1000)
-                sinal = np.exp(-(t - tempo)**2 / (0.1 * tempo**2)) * 100
-                sinais.append(sinal)
-                
-                # Coletar resultados
-                resultados.append({
-                    "Molécula": molecula,
-                    "Mobilidade": mu,
-                    "Tempo": tempo,
-                    "Intensidade": np.max(sinal)
-                })
+        tempos_ordenados = sorted(zip(tempos, intensidades, massas), key=lambda x: x[0][1])
+        t = np.linspace(0, max([x[0][1] for x in tempos_ordenados]) + 5, 1000)
+        y = np.zeros_like(t)
 
-            # Plotar resultados
-            fig, ax = plt.subplots(figsize=(10, 6))
-            for sinal, tempo, molecula in zip(sinais, tempos, selecionadas):
-                ax.plot(t, sinal, label=f"{molecula} ({tempo:.2f}s)")
-            
-            ax.set_xlabel("Tempo (s)")
-            ax.set_ylabel("Intensidade (UA)")
-            ax.set_title("Eletroferograma Simulado")
-            ax.legend()
-            ax.grid(True)
-            st.pyplot(fig)
+        for (nome, tempo), intensidade, massa in tempos_ordenados:
+            largura = 0.5 + massa / 500
+            pico = intensidade * np.exp(-((t - tempo)**2) / (2 * largura**2))
+            y += pico
 
-            # Exibir tabela de resultados
-            df_resultados = pd.DataFrame(resultados)
-            st.dataframe(df_resultados.style.format({"Mobilidade": "{:.2e}", "Tempo": "{:.2f}"}))
+        if ruido:
+            y += np.random.normal(0, 0.5, size=len(y))
 
-    with tab3:
-        st.header("📊 Relatório")
-        if 'resultados' in locals():
-            pdf = FPDF()
+        fig, ax = plt.subplots()
+        ax.plot(t, y, color='purple')
+        ax.set_xlabel("Tempo (s)")
+        ax.set_ylabel("Intensidade (u.a.)")
+        ax.set_title("Cromatograma Simulado de Eletroforese")
+        st.pyplot(fig)
+
+        # Exportar PDF
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png")
+        buffer.seek(0)
+
+        class PDF(FPDF):
+            def header(self):
+                self.set_font("Arial", "B", 12)
+                self.cell(0, 10, "Relatório de Simulação de Eletroforese", ln=True, align="C")
+
+        if st.button("📄 Exportar PDF da Simulação"):
+            pdf = PDF()
             pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            
-            # Cabeçalho
-            pdf.cell(0, 10, "Relatório de Simulação CE", ln=True, align='C')
-            pdf.cell(0, 10, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True)
-            
-            # Parâmetros
-            pdf.cell(0, 10, "Parâmetros da Simulação:", ln=True)
-            pdf.cell(0, 10, f"- Voltagem: {voltagem} kV", ln=True)
-            pdf.cell(0, 10, f"- pH: {pH}", ln=True)
-            pdf.cell(0, 10, f"- Temperatura: {temperatura} °C", ln=True)
-            
-            # Resultados
-            pdf.cell(0, 10, "Resultados:", ln=True)
-            for idx, res in enumerate(resultados, 1):
-                pdf.cell(0, 10, f"{idx}. {res['Molécula']}: {res['Tempo']:.2f} s", ln=True)
-            
-            # Salvar PDF
-            st.download_button(
-                label="⬇️ Baixar Relatório Completo",
-                data=pdf.output(dest='S').encode('latin1'),
-                file_name="relatorio_ce.pdf",
-                mime="application/pdf"
-            )
-        else:
-            st.info("Execute uma simulação primeiro para gerar o relatório")
+            pdf.set_font("Arial", size=10)
 
-if __name__ == "__main__":
-    main()
+            pdf.cell(0, 10, f"Moléculas Simuladas: {', '.join([x[0][0] for x in tempos_ordenados])}", ln=True)
+            pdf.cell(0, 10, f"Voltagem: {voltagem} kV | Comprimento do capilar: {comprimento_capilar} cm | pH: {pH}", ln=True)
+
+            img_path = "cromatograma_temp.png"
+            with open(img_path, "wb") as f:
+                f.write(buffer.read())
+            pdf.image(img_path, x=10, y=40, w=180)
+            pdf.output("simulacao_eletroforese.pdf")
+
+            with open("simulacao_eletroforese.pdf", "rb") as f:
+                st.download_button("📥 Baixar PDF", f, file_name="simulacao_eletroforese.pdf")
+    else:
+        st.info("Selecione moléculas para simular.")
+else:
+    st.warning("Adicione moléculas ao banco para usar a simulação.")
